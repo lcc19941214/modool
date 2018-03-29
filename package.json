@@ -1,0 +1,12 @@
+{
+  "name": "modool",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "conan <lcc19941214@gmail.com> (https://github.com/lcc19941214/)",
+  "license": "ISC"
+}
