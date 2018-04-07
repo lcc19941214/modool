@@ -1,7 +1,7 @@
-(function(global, fn) {
-  var modool = fn(global);
-  global.modool = modool;
-})(window, function(global) {
+(function(fn) {
+  var modool = fn(window);
+  window.modool = modool;
+})(function(global) {
   /**
    * Store all modules
    */
@@ -17,6 +17,48 @@
    */
   var _moduleSource = null;
 
+  var hub = (function() {
+    var state = {};
+
+    var on = function(event, handler) {
+      state[event] = state[event] || [];
+      state[event].push(handler);
+    };
+
+    var once = function(event, handler) {
+      function _once() {
+        off(event, _once);
+        var args = Array.prototype.slice.call(arguments);
+        handler.apply(this, args);
+      }
+
+      on(event, _once);
+    };
+
+    var off = function(event, handler) {
+      state[event] = state[event] || [];
+      state[event] = state[event].filter(function(fn) {
+        return fn !== handler;
+      });
+    };
+
+    var emit = function(event) {
+      var args = Array.prototype.slice.call(arguments);
+      if (state[event]) {
+        state[event].forEach(function(fn) {
+          fn.apply(this, args.slice(1));
+        });
+      }
+    };
+
+    return {
+      on: on,
+      once: once,
+      off: off,
+      emit: emit
+    };
+  })();
+
   /**
    * Define a user module.
    * @param {string} name
@@ -30,10 +72,12 @@
       return;
     }
 
-    var module = internalDefine(name);
+    var module = registerModule(name);
     loadDeps(deps, function(deps_) {
       var exports = factory.call(factory, require, deps_);
       module.exports = exports;
+      module.loaded = true;
+      hub.emit(name, module);
     });
   }
 
@@ -42,37 +86,50 @@
    * @param {string} name
    * @param {*} module
    */
-  function internalDefine(name, module) {
+  function registerModule(name, module) {
     MODULES[name] = {
       name: name,
-      exports: module
+      exports: module,
+      loaded: false
     };
     return MODULES[name];
   }
 
   /**
-   * Require a module.
+   * Get a module.
    * @param {string} name
+   * @param {function} [callback]
    */
-  function requireSync(name) {
-    if (MODULES[name]) return MODULES[name];
+  function require(name, callback) {
+    var module;
+    if (callback) {
+      module = MODULES[name];
+      if (module) {
+        if (module.loaded) {
+          callback(module);
+        } else {
+          hub.once(name, callback);
+        }
+      } else {
+        downloadModule(name, callback);
+      }
+    } else {
+      module = MODULES[name];
+      return module;
+    }
   }
 
   /**
-   * Require MODULES in async.
-   * Download script and append it to head.
+   * Download a module.
+   * Most of time it should be a third part lib.
    * @param {string} name
-   * @param {string} src
    * @param {function} callback
    */
-  function requireAsync(name, src, callback) {
-    if (requireSync(name)) {
-      callback(requireSync(name));
-      return;
-    }
-
+  function downloadModule(name, callback) {
+    var src = _moduleSource[name];
     if (!src) {
-      console.error('module [' + name + "] doesn't have a source");
+      console.error('module [' + name + '] doesn\'t have a source');
+      callback();
       return;
     }
 
@@ -81,13 +138,20 @@
       asyncList.push(callback);
     } else {
       asyncList = ASYNC_REQUIRE_MAP[name] = [callback];
+      !(name in MODULES) && registerModule(name);
 
       var s = document.createElement('script');
       s.addEventListener(
         'load',
-        function(event) {
+        function() {
+          var module = require(name);
+          module.exports = global[name];
+          module.loaded = true;
+
+          hub.emit(name, module);
+
           asyncList.forEach(function(task) {
-            task(internalDefine(name, global[name]));
+            task(module);
           });
           ASYNC_REQUIRE_MAP[name] = null;
         },
@@ -111,59 +175,19 @@
       return;
     }
 
-    var loadedCount = 0;
-    var list = [];
+    var taskList = [];
     deps.forEach(function(name) {
-      var module = requireSync(name);
-      if (module) {
-        loadedCount++;
-        depModules.push(module);
-        if (loadedCount === len) loadDepsDone(deps, depModules, callback);
-      } else if (_moduleSource && _moduleSource[name]) {
-        list.push(function(cb) {
-          requireAsync(name, _moduleSource[name], cb);
-        });
-      } else {
-        loadedCount++;
-        depModules.push(undefined);
-        console.warn('module [' + name + '] is not defined');
-      }
+      taskList.push(require.bind(this, name));
     });
 
-    // load modules in async way by order
-    var listTrigger = list.reduceRight(
-      function(prevRequire, curRequire, arr, idx) {
-        return function(module) {
-          if (module) {
-            loadedCount++;
-            depModules.push(module);
-          }
-          curRequire(prevRequire);
-        };
-      },
-      function(module) {
-        loadedCount++;
+    var initTask = taskList.reduceRight(function(prev, cur) {
+      return cur.bind(this, function(module) {
         depModules.push(module);
-        if (loadedCount === len) loadDepsDone(deps, depModules, callback);
-      }
-    );
+        prev(module);
+      });
+    }, callback.bind(this, depModules));
 
-    listTrigger();
-  }
-
-  /**
-   * Sort dependent modules.
-   * @param {[string]} deps
-   * @param {[Object]} depModules
-   * @param {function} callback
-   */
-  function loadDepsDone(deps, depModules, callback) {
-    depModules.sort(function(a, b) {
-      var aIndex = deps.indexOf(a.name);
-      var bIndex = deps.indexOf(b.name);
-      return aIndex - bIndex;
-    });
-    callback(depModules);
+    initTask();
   }
 
   /**
@@ -172,19 +196,6 @@
    */
   function config(options) {
     _moduleSource = options.moduleSource || null;
-  }
-
-  /**
-   * Require a module.
-   * @param {string} name module name
-   * @param {function} callback
-   */
-  function require(name, callback) {
-    if (callback) {
-      requireAsync(name, _moduleSource[name], callback);
-    } else {
-      return requireSync(name);
-    }
   }
 
   return {
