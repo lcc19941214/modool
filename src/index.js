@@ -133,33 +133,20 @@
       return;
     }
 
-    var asyncList = ASYNC_REQUIRE_MAP[name];
-    if (asyncList) {
-      asyncList.push(callback);
-    } else {
-      asyncList = ASYNC_REQUIRE_MAP[name] = [callback];
-      !(name in MODULES) && registerModule(name);
+    registerModule(name);
 
-      var s = document.createElement('script');
-      s.addEventListener(
-        'load',
-        function() {
-          var module = require(name);
-          module.exports = global[name];
-          module.loaded = true;
+    function handleOnLoad() {
+      var module = require(name);
+      module.exports = global[name];
+      module.loaded = true;
 
-          hub.emit(name, module);
-
-          asyncList.forEach(function(task) {
-            task(module);
-          });
-          ASYNC_REQUIRE_MAP[name] = null;
-        },
-        false
-      );
-      s.src = src;
-      document.head.appendChild(s);
+      hub.emit(name, module);
     }
+
+    var s = document.createElement('script');
+    s.addEventListener('load', handleOnLoad, false);
+    s.src = src;
+    document.head.appendChild(s);
   }
 
   /**
